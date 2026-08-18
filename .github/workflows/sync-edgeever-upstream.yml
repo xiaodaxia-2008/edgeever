@@ -94,13 +94,14 @@ jobs:
             head_version="unknown"
           fi
 
-          # Product content diff ignores only this updater workflow so deploy
-          # forks that only differ in history or the updater file can reset.
-          content_diff="$(git diff --name-only "${target_commit}" HEAD -- ':!.github/workflows/sync-edgeever-upstream.yml' || true)"
+          # Product content ignores GitHub workflow files because the default
+          # Actions token cannot publish workflow updates back to deployment
+          # forks. Keep fork-local automation untouched while syncing app code.
+          content_diff="$(git diff --name-only "${target_commit}" HEAD | grep -Ev '^\.github/workflows/' || true)"
 
           root_commit="$(git rev-list --max-parents=0 HEAD | head -n 1)"
           root_subject="$(git show -s --format=%s "${root_commit}")"
-          non_workflow_changes="$(git diff --name-only "${root_commit}" HEAD -- ':!.github/workflows/sync-edgeever-upstream.yml' || true)"
+          non_workflow_changes="$(git diff --name-only "${root_commit}" HEAD | grep -Ev '^\.github/workflows/' || true)"
           bootstrap_import=false
           if [ "${root_subject}" = "source repo import" ] && [ -z "${non_workflow_changes}" ]; then
             bootstrap_import=true
@@ -183,16 +184,16 @@ jobs:
                 echo "**Application content already matches upstream target** (history tip may differ). No git update is needed for deployment."
                 ;;
               behind_target)
-                echo "**Fork is behind upstream.** Aligning with a hard reset to the target commit (deploy-mirror path)."
+                echo "**Fork is behind upstream.** Applying the target's publishable app changes while preserving fork-local workflow automation."
                 ;;
               bootstrap_import)
-                echo "**Cloudflare import history detected.** Resetting onto upstream target so the fork becomes a normal EdgeEver history."
+                echo "**Cloudflare import history detected.** Reapplying upstream app content while leaving deployment workflow files unchanged."
                 ;;
               deploy_mirror_reset)
-                echo "**Deploy-only fork with diverged history.** Resetting onto upstream target."
+                echo "**Deploy-only fork with diverged history.** Reapplying upstream app content without touching workflow files."
                 ;;
               customized_merge|ahead_with_content_drift)
-                echo "**Local application changes detected.** Merging upstream target and leaving production unchanged if verification fails."
+                echo "**Local application changes detected.** Applying upstream app changes with conflict checks and leaving production unchanged if verification fails."
                 ;;
               *)
                 echo "Decision reason: \`${reason}\`."
@@ -220,26 +221,55 @@ jobs:
           git config user.name "edgeever-updater[bot]"
           git config user.email "edgeever-updater[bot]@users.noreply.github.com"
 
+          base_commit="$(git merge-base HEAD "${TARGET_COMMIT}" 2>/dev/null || true)"
+          patch_file="$(mktemp)"
+          cleanup() {
+            rm -f "${patch_file}"
+          }
+          trap cleanup EXIT
+
+          apply_target_changes() {
+            if [ -n "${base_commit}" ]; then
+              git diff --binary "${base_commit}" "${TARGET_COMMIT}" -- . ':(exclude).github/workflows/**' > "${patch_file}"
+              if [ -s "${patch_file}" ]; then
+                git apply --index --3way "${patch_file}"
+              fi
+            else
+              git restore --source="${TARGET_COMMIT}" --staged --worktree -- . ':(exclude).github/workflows/**'
+            fi
+          }
+
           case "${ALIGN_MODE}" in
             reset)
-              git reset --hard "${TARGET_COMMIT}"
-              git clean -fd
-              echo "Reset main onto ${TARGET_REF} (${TARGET_COMMIT:0:12}) because ${REASON}."
+              if ! apply_target_changes; then
+                git reset --hard HEAD
+                echo "Unable to apply non-workflow changes from ${TARGET_REF}." >&2
+                echo "Resolve the deployment fork manually, or retry after reducing local application changes." >&2
+                exit 1
+              fi
+              echo "Applied non-workflow update from ${TARGET_REF} (${TARGET_COMMIT:0:12}) because ${REASON}."
               ;;
             merge)
-              if ! git merge --no-edit -m "chore: update EdgeEver from ${TARGET_REF}" "${TARGET_COMMIT}"; then
-                git merge --abort || true
+              if ! apply_target_changes; then
+                git reset --hard HEAD
                 echo "Merge from ${TARGET_REF} conflicted with local application changes." >&2
                 echo "Resolve the customized fork manually, or reset main to upstream if you do not need local code changes." >&2
                 exit 1
               fi
-              echo "Merged ${TARGET_REF} (${TARGET_COMMIT:0:12}) because ${REASON}."
+              echo "Merged non-workflow changes from ${TARGET_REF} (${TARGET_COMMIT:0:12}) because ${REASON}."
               ;;
             *)
               echo "Unsupported align mode: ${ALIGN_MODE}" >&2
               exit 1
               ;;
           esac
+
+          if git diff --cached --quiet; then
+            echo "No publishable non-workflow changes were staged after aligning to ${TARGET_REF}." >&2
+            exit 1
+          fi
+
+          git commit -m "chore: update EdgeEver from ${TARGET_REF}"
 
       - name: Set up Bun
         if: steps.upstream.outputs.update_required == 'true'
@@ -278,16 +308,9 @@ jobs:
             exit 0
           fi
 
-          if [ "${ALIGN_MODE}" = "reset" ]; then
-            # Deploy mirrors may rewrite short import/divergent history.
-            git push --force-with-lease origin HEAD:main
-            echo "mode=force_with_lease" >> "${GITHUB_OUTPUT}"
-            echo "Published reset main for ${TARGET_REF}."
-          else
-            git push origin HEAD:main
-            echo "mode=push" >> "${GITHUB_OUTPUT}"
-            echo "Published merge for ${TARGET_REF}."
-          fi
+          git push origin HEAD:main
+          echo "mode=push" >> "${GITHUB_OUTPUT}"
+          echo "Published non-workflow update for ${TARGET_REF}."
 
       - name: Trigger Cloudflare Deploy Hook
         if: steps.publish.outcome == 'success'
@@ -327,7 +350,7 @@ jobs:
             echo "| Final main | \`${final_commit:0:12}\` |"
             echo "| Target | \`${TARGET_REF}\` / v${TARGET_VERSION} |"
             if [ "${UPDATE_REQUIRED}" = "true" ]; then
-              echo "| Outcome | Updated and published (\`${ALIGN_MODE}\`) |"
+              echo "| Outcome | Updated and published (\`${ALIGN_MODE}\`, workflows preserved) |"
               echo ""
               echo "Cloudflare Workers Builds should deploy this commit from \`main\`. Confirm the Deployment commit SHA matches \`${final_commit:0:12}\`."
             elif [ "${REPUBLISH_ONLY}" = "true" ]; then
