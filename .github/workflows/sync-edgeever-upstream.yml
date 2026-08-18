@@ -235,7 +235,7 @@ jobs:
                 git apply --index --3way "${patch_file}"
               fi
             else
-              git restore --source="${TARGET_COMMIT}" --staged --worktree -- . ':(exclude).github/workflows/**'
+              git restore --source="${TARGET_COMMIT}" --staged --worktree --no-overlay -- . ':(exclude).github/workflows/**'
             fi
           }
 
