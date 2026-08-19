@@ -103,6 +103,8 @@ jobs:
           local_non_workflow_changes=""
           if [ -n "${target_merge_base}" ]; then
             local_non_workflow_changes="$(git diff --name-only "${target_merge_base}" HEAD | grep -Ev '^\.github/workflows/' || true)"
+          else
+            local_non_workflow_changes="${content_diff}"
           fi
           root_commit="$(git rev-list --max-parents=0 HEAD | head -n 1)"
           root_subject="$(git show -s --format=%s "${root_commit}")"
