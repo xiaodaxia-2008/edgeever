@@ -177,7 +177,9 @@ describe("Cloudflare deployment entrypoints", () => {
     expect(workflow).toContain("already_on_target");
     expect(workflow).toContain("GITHUB_STEP_SUMMARY");
     expect(workflow).toContain("EDGE_EVER_CLOUDFLARE_DEPLOY_HOOK_URL");
-    expect(workflow).toContain("non_workflow_changes");
+    expect(workflow).toContain("target_merge_base");
+    expect(workflow).toContain("local_non_workflow_changes");
+    expect(workflow).toContain("bootstrap_non_workflow_changes");
     expect(workflow).toContain("Prefer this workflow over GitHub **Sync fork**");
     expect(workflow).not.toContain("git push --force-with-lease origin HEAD:main");
   });

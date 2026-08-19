@@ -99,11 +99,16 @@ jobs:
           # forks. Keep fork-local automation untouched while syncing app code.
           content_diff="$(git diff --name-only "${target_commit}" HEAD | grep -Ev '^\.github/workflows/' || true)"
 
+          target_merge_base="$(git merge-base HEAD "${target_commit}" 2>/dev/null || true)"
+          local_non_workflow_changes=""
+          if [ -n "${target_merge_base}" ]; then
+            local_non_workflow_changes="$(git diff --name-only "${target_merge_base}" HEAD | grep -Ev '^\.github/workflows/' || true)"
+          fi
           root_commit="$(git rev-list --max-parents=0 HEAD | head -n 1)"
           root_subject="$(git show -s --format=%s "${root_commit}")"
-          non_workflow_changes="$(git diff --name-only "${root_commit}" HEAD | grep -Ev '^\.github/workflows/' || true)"
+          bootstrap_non_workflow_changes="$(git diff --name-only "${root_commit}" HEAD | grep -Ev '^\.github/workflows/' || true)"
           bootstrap_import=false
-          if [ "${root_subject}" = "source repo import" ] && [ -z "${non_workflow_changes}" ]; then
+          if [ "${root_subject}" = "source repo import" ] && [ -z "${bootstrap_non_workflow_changes}" ]; then
             bootstrap_import=true
           fi
 
@@ -143,7 +148,7 @@ jobs:
             # Diverged or unrelated history with real content differences.
             # Deploy-only forks (only the updater workflow ever changed) reset;
             # customized forks merge and fail closed on conflicts.
-            if [ -z "${non_workflow_changes}" ] || [ "${bootstrap_import}" = "true" ]; then
+            if [ -z "${local_non_workflow_changes}" ] || [ "${bootstrap_import}" = "true" ]; then
               update_required=true
               align_mode=reset
               reason=deploy_mirror_reset
